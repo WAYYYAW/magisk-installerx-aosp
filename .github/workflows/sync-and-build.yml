@@ -134,9 +134,6 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Cache Tools and Apktool
         uses: actions/cache@v4
         with:
