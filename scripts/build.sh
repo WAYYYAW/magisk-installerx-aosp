@@ -176,8 +176,12 @@ print(f"    Patched references in {count} files.")
 EOF
 
 REBUILT_APK="${TEMP_DIR}/rebuilt.apk"
+LOCAL_AAPT2="${TEMP_DIR}/aapt2"
+cp -f "${AAPT2}" "${LOCAL_AAPT2}"
+chmod +x "${LOCAL_AAPT2}"
+
 echo "[+] Rebuilding APK with aapt2..."
-java -jar "${APKTOOL_JAR}" b "${DECOMPILE_DIR}" -o "${REBUILT_APK}" --aapt "${AAPT2}" >/dev/null
+java -jar "${APKTOOL_JAR}" b "${DECOMPILE_DIR}" -o "${REBUILT_APK}" --aapt "${LOCAL_AAPT2}" >/dev/null
 
 ALIGNED_APK="${TEMP_DIR}/aligned.apk"
 echo "[+] Aligning APK..."
