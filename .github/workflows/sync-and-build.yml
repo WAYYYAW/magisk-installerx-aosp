@@ -1,0 +1,193 @@
+name: Sync Upstream and Build AOSP Module
+
+on:
+  schedule:
+    # Check upstream updates every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Specific upstream tag to build (leave empty for latest)'
+        required: false
+        default: ''
+      force_build:
+        description: 'Force build even if release tag already exists in this repo'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - '.gitignore'
+
+permissions:
+  contents: write
+
+jobs:
+  check-upstream:
+    name: Check Upstream Updates
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      target_tag: ${{ steps.check.outputs.target_tag }}
+      release_name: ${{ steps.check.outputs.release_name }}
+      release_body: ${{ steps.check.outputs.release_body }}
+      is_prerelease: ${{ steps.check.outputs.is_prerelease }}
+    steps:
+      - name: Check Upstream Release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.target_tag }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+        run: |
+          UPSTREAM_REPO="wxxsfxyzm/InstallerX-Revived"
+          CURRENT_REPO="${{ github.repository }}"
+          
+          python3 - << 'EOF'
+          import os, json, subprocess, sys
+          
+          gh_token = os.environ.get("GH_TOKEN", "")
+          input_tag = os.environ.get("INPUT_TAG", "").strip()
+          force_build = os.environ.get("FORCE_BUILD", "false").lower() == "true"
+          upstream_repo = "wxxsfxyzm/InstallerX-Revived"
+          current_repo = os.environ.get("CURRENT_REPO", "")
+          
+          headers = {"Accept": "application/vnd.github+json"}
+          if gh_token:
+              headers["Authorization"] = f"Bearer {gh_token}"
+          
+          import urllib.request
+          
+          def fetch_json(url):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req) as resp:
+                  return json.loads(resp.read().decode("utf-8"))
+          
+          # 1. Determine target upstream release
+          target_release = None
+          if input_tag:
+              try:
+                  target_release = fetch_json(f"https://api.github.com/repos/{upstream_repo}/releases/tags/{input_tag}")
+              except Exception as e:
+                  print(f"Error fetching specified tag {input_tag}: {e}", file=sys.stderr)
+                  sys.exit(1)
+          else:
+              releases = fetch_json(f"https://api.github.com/repos/{upstream_repo}/releases")
+              for r in releases:
+                  # Ensure it has an online APK asset
+                  has_apk = any(a.get("name", "").endswith(".apk") and "online" in a.get("name", "") for a in r.get("assets", []))
+                  if has_apk:
+                      target_release = r
+                      break
+          
+          if not target_release:
+              print("No valid upstream release found with online APK asset.", file=sys.stderr)
+              sys.exit(1)
+          
+          target_tag = target_release.get("tag_name", "")
+          release_name = target_release.get("name", target_tag)
+          release_body = target_release.get("body", "")
+          is_prerelease = target_release.get("prerelease", False)
+          
+          print(f"Target upstream release: {target_tag} ({release_name})")
+          
+          # 2. Check if current repo already released this tag
+          already_exists = False
+          if not force_build and current_repo:
+              try:
+                  existing = fetch_json(f"https://api.github.com/repos/{current_repo}/releases/tags/{target_tag}")
+                  if existing and existing.get("tag_name") == target_tag:
+                      already_exists = True
+              except Exception:
+                  already_exists = False
+          
+          should_build = force_build or (not already_exists)
+          print(f"Already exists in current repo: {already_exists}")
+          print(f"Should build: {should_build}")
+          
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"should_build={'true' if should_build else 'false'}\n")
+                  f.write(f"target_tag={target_tag}\n")
+                  f.write(f"release_name={release_name}\n")
+                  f.write(f"is_prerelease={'true' if is_prerelease else 'false'}\n")
+                  # Multiline output for release body
+                  delimiter = "EOF_RELEASE_BODY_DELIMITER"
+                  f.write(f"release_body<<{delimiter}\n{release_body}\n{delimiter}\n")
+          EOF
+
+  build-and-release:
+    name: Build and Release AOSP Module
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Tools and Apktool
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: ${{ runner.os }}-tools-apktool-v3.0.3
+
+      - name: Build AOSP Module & Patched APK
+        id: build
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh "${{ needs.check-upstream.outputs.target_tag }}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-upstream.outputs.target_tag }}
+          TITLE: InstallerX Revived AOSP ${{ needs.check-upstream.outputs.target_tag }}
+          IS_PRERELEASE: ${{ needs.check-upstream.outputs.is_prerelease }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${IS_PRERELEASE}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          
+          cat << 'EOF' > release_notes.md
+          ## InstallerX Revived AOSP (Magisk / KernelSU / APatch Module)
+          
+          > 这是一个将 [InstallerX Revived](https://github.com/wxxsfxyzm/InstallerX-Revived) 的内部包名修改为原生系统包名 `com.android.packageinstaller` 的专用 Magisk 模块。
+          
+          ### 📦 包含产物
+          * **`AOSP.zip`**：Magisk / KernelSU / APatch 刷机模块（内置系统级 PackageInstaller）。
+          * **`InstallerX-Revived-online-${{ needs.check-upstream.outputs.target_tag }}.apk`**：包名已改为 `com.android.packageinstaller` 的独立安装包。
+          
+          ### 🔄 上游版本说明
+          * **版本号**：`${{ needs.check-upstream.outputs.target_tag }}`
+          * **上游地址**：[wxxsfxyzm/InstallerX-Revived](https://github.com/wxxsfxyzm/InstallerX-Revived)
+          
+          ---
+          ### 📝 上游更新日志
+          ${{ needs.check-upstream.outputs.release_body }}
+          EOF
+          
+          # Delete existing release/tag if force rebuild
+          gh release delete "${TAG}" --yes 2>/dev/null || true
+          git push origin ":refs/tags/${TAG}" 2>/dev/null || true
+          
+          gh release create "${TAG}" \
+            dist/AOSP.zip \
+            dist/InstallerX-Revived-online-*.apk \
+            --title "${TITLE}" \
+            --notes-file release_notes.md \
+            ${PRERELEASE_FLAG}

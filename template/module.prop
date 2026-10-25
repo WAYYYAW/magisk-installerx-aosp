@@ -1,0 +1,7 @@
+id=com.android.packageinstaller
+name=InstallerX Revived
+version=26.09.816ea54
+versionCode=260900
+author=wxxsfxyzm
+description=InstallerX as System Package Installer (AOSP)
+actionIcon=launcher.png

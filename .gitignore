@@ -1,0 +1,26 @@
+# Build and output artifacts
+*.apk
+*.zip
+dist/
+build/
+output/
+temp/
+tools/apktool.jar
+
+# Keystores & credentials (use GitHub Secrets instead)
+*.jks
+*.keystore
+*.key
+keystore.properties
+
+# IDE / Editor files
+.idea/
+.vscode/
+*.swp
+*.bak
+*~
+.DS_Store
+
+# OS / Python caches
+__pycache__/
+*.pyc
